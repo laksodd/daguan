@@ -169,6 +169,8 @@ input,select{font-family:inherit}
   <div id="content">
     <div id="crumb">
       <span id="crumbTx">加载中…</span>
+      <button class="fbtn" id="fSol">🔒 只看题目</button>
+      <button class="fbtn" id="fLeaf">🗂 章节</button>
       <button class="fbtn" id="fToggle">⚙ 筛选</button>
     </div>
     <div id="filters">
@@ -211,11 +213,26 @@ fetch("data.json").then(r=>r.json()).then(d=>{
     NOTES[n.id]={...n,kids:(n.kids||[]).map(k=>k.id)};
     (n.kids||[]).forEach(k=>PARENT[k.id]=n.id);
   });
-  buildFilters();buildTree();updateStat();
+  buildFilters();buildTree();updateStat();syncToggles();
   showWall(null);
 });
 function flat(nodes,depth,tid){nodes.forEach(n=>{n.depth=depth;n.t=tid;FLAT.push(n);flat(n.kids||[],depth+1,tid);});}
 function mastered(){let c=0;for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith("mn_ok_")&&localStorage.getItem(k)==="1")c++;}return c;}
+/* ---- 可见性开关 ---- */
+function solVisible(){return localStorage.getItem("mn_showsol")==="1";}
+function leafVisible(){return localStorage.getItem("mn_showleaf")==="1";}
+function cardOK(n){return (!n.kids||!n.kids.length)&&(solVisible()||n.kind!=="sol")&&(n.m&&n.m.length||n.text||n.hl);}
+function leafCount(n){let c=0;allDescRaw(n).slice(1).forEach(k=>{if(!k.kids||!k.kids.length)c++;});return c;}
+function allDescRaw(n){let out=[n];(n.kids||[]).forEach(k=>out=out.concat(allDescRaw(k)));return out;}
+function syncToggles(){
+  $("fSol").textContent=solVisible()?"👁 显示解答卡":"🔒 只看题目";
+  $("fSol").classList.toggle("on",!solVisible());
+  $("fLeaf").textContent=leafVisible()?"🗂 全部卡片":"🗂 章节";
+  $("fLeaf").classList.toggle("on",!leafVisible());
+}
+$("fSol").onclick=()=>{localStorage.setItem("mn_showsol",solVisible()?"0":"1");syncToggles();refreshView();};
+$("fLeaf").onclick=()=>{localStorage.setItem("mn_showleaf",leafVisible()?"0":"1");syncToggles();buildTree();refreshView();};
+function refreshView(){if(MODE==="mind")openMind(M.root);else showWall(CUR_NODE);}
 function dueCount(){let c=0,now=Date.now();for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith("mn_sc_")){try{const s=JSON.parse(localStorage.getItem(k));if(s.due<=now)c++;}catch(e){}}}return c;}
 function updateStat(){$("stat").innerHTML=`卡 ${FLAT.length} · 掌握 <b>${mastered()}</b> · 今日复习 ${dueCount()}`;}
 
@@ -312,9 +329,10 @@ function buildTree(){
   CUR_TOPIC.tree.forEach(n=>tree.appendChild(nodeEl(n)));
 }
 function nodeEl(n){
-  const div=document.createElement("div");
   const hasKids=n.kids&&n.kids.length;
-  div.innerHTML=`<div class="tn"><span class="tw">${hasKids?"▶":""}</span><span class="lbl"></span><span class="cnt">${hasKids?n.kids.length:""}</span></div>`;
+  if(!hasKids&&!leafVisible())return document.createDocumentFragment();
+  const div=document.createElement("div");
+  div.innerHTML=`<div class="tn"><span class="tw">${hasKids?"▶":""}</span><span class="lbl"></span><span class="cnt">${hasKids?leafCount(n):""}</span></div>`;
   const row=div.firstElementChild;
   row.querySelector(".lbl").textContent=n.title||n.text.slice(0,20)||(n.m.length?"[图片卡]":"[笔记]");
   row.onclick=e=>{
@@ -365,7 +383,7 @@ function applyFilter(){
       allDesc(m).slice(1).forEach(d=>{
         if(!seen.has(d.id)&&(d.m&&d.m.length||d.text||d.hl)){seen.add(d.id);out.push(d);}
       });
-    }else if(!seen.has(m.id)&&(m.m&&m.m.length||m.text||m.hl)){seen.add(m.id);out.push(m);}
+    }else if(!seen.has(m.id)&&cardOK(m)){seen.add(m.id);out.push(m);}
   });
   $("crumbTx").textContent=`筛选结果 ${out.length} 张`;
   $("view").innerHTML=`<div class="wall" id="wall"></div>`;
@@ -378,28 +396,34 @@ function showWall(node){
   setMode("browse");
   const view=$("view");
   if(!node){
-    const cards=allDesc({kids:CUR_TOPIC.tree,id:"root"}).slice(1).filter(n=>n.m&&n.m.length);
-    $("crumbTx").textContent=`${CUR_TOPIC.name} · 图片卡 ${cards.length} 张`;
+    const cards=allDesc({kids:CUR_TOPIC.tree,id:"root"}).slice(1).filter(cardOK);
+    $("crumbTx").textContent=`${CUR_TOPIC.name} · 卡片 ${cards.length} 张`;
     view.innerHTML=`<div class="wall" id="wall"></div>`;renderCards(cards);return;
   }
   CUR_NODE=node;
-  const kids=node.kids||[];
-  $("crumbTx").textContent=pathOf(node.id);
-  if(kids.length){
-    view.innerHTML=`<div class="dnav"><button id="pkAll">▶ 复习此分支（${allDesc(node).length-1} 卡）</button></div><div class="wall" id="wall"></div>`;
-    $("pkAll").onclick=()=>startQueue(allDesc(node).slice(1));
-    renderCards(kids);
-  }else renderDetail(node);
+  if(!(node.kids&&node.kids.length)){renderDetail(node);return;}
+  const cards=allDesc(node).slice(1).filter(cardOK);
+  const branches=(node.kids||[]).filter(k=>k.kids&&k.kids.length);
+  $("crumbTx").textContent=pathOf(node.id)+` · 卡片 ${cards.length} 张`;
+  view.innerHTML=`<div class="dnav">
+      ${branches.map(b=>`<button class="mbtn" data-bid="${b.id}">${esc(b.title||"未命名分支")}（${leafCount(b)}）</button>`).join("")}
+      <button id="pkAll" class="mbtn on">▶ 复习此分支（${cards.length} 卡）</button></div>
+    <div class="wall" id="wall"></div>`;
+  view.querySelectorAll("[data-bid]").forEach(b=>b.onclick=()=>showWall(NOTES[b.dataset.bid]));
+  $("pkAll").onclick=()=>startQueue(cards);
+  renderCards(cards);
 }
 function chip(n){const t=n.tags||{};let s="";if(t.year)s+=t.year+(t.paper||"")+" · ";if(t.typ)s+=t.typ+" · ";return s+(t.src||"");}
 function renderCards(nodes){
   const wall=$("wall");
-  if(!nodes.length){wall.outerHTML='<div class="empty">此节点下没有卡片</div>';return;}
+  nodes=nodes.filter(n=>solVisible()||n.kind!=="sol");
+  if(!nodes.length){wall.outerHTML='<div class="empty">此节点下没有卡片（可能有解答卡被隐藏，点顶部「👁 显示解答卡」查看）</div>';return;}
   nodes.forEach(n=>{
     const done=localStorage.getItem("mn_ok_"+n.id)==="1";
     const el=document.createElement("div");el.className="card";
     const hasMask=n.m.length&&((masksOf(n.m[0])||[]).length>0);
-    el.innerHTML=`${n.tags&&(n.tags.year||n.tags.typ)?`<span class="badge">${esc(chip(n))}</span>`:""}
+    el.innerHTML=`${n.kind==="sol"?'<span class="badge" style="background:rgba(255,92,122,.2);color:#ff9db1">解答</span>':""}
+      ${n.tags&&(n.tags.year||n.tags.typ)?`<span class="badge">${esc(chip(n))}</span>`:""}
       ${hasMask?'<span class="badge ms">可遮挡</span>':""}
       ${done?'<span class="badge ok">掌握</span>':""}
       <div class="thumb">${n.m.length?`<img loading="lazy" src="media/${n.m[0]}">`:`<div style="color:#5a6180;font-size:12px">无图</div>`}</div>
@@ -416,7 +440,7 @@ function renderDetail(n){
   const sibs=PARENT[n.id]?NOTES[PARENT[n.id]].kids:CUR_TOPIC.tree.map(x=>x.id);
   const idx=sibs.indexOf(n.id);
   const t=n.tags||{};
-  const chips=[t.year&&t.paper?t.year+" "+t.paper:t.year?t.year+"年":"",t.typ,t.src].filter(Boolean)
+  const chips=[n.kind==="sol"?"解答卡":"题目卡",t.year&&t.paper?t.year+" "+t.paper:t.year?t.year+"年":"",t.typ,t.src].filter(Boolean)
     .map(v=>`<span class="tagchip">${esc(v)}</span>`).join("");
   $("crumbTx").textContent=pathOf(n.id);
   const view=$("view");
@@ -641,10 +665,10 @@ let fq=[],fi=0;
 function schedOf(id){const s=localStorage.getItem("mn_sc_"+id);return s?JSON.parse(s):{iv:0,due:0};}
 function startReview(){
   const now=Date.now();
-  const due=FLAT.filter(n=>n.t===CUR_TOPIC.id&&(n.m.length||n.text)&&schedOf(n.id).due<=now);
+  const due=FLAT.filter(n=>n.t===CUR_TOPIC.id&&n.kind!=="sol"&&(n.m.length||n.text)&&schedOf(n.id).due<=now);
   let queue=shuffle(due).slice(0,60);
   if(queue.length<20){
-    const fresh=shuffle(FLAT.filter(n=>n.t===CUR_TOPIC.id&&(n.m.length||n.text)&&!localStorage.getItem("mn_sc_"+n.id)));
+    const fresh=shuffle(FLAT.filter(n=>n.t===CUR_TOPIC.id&&n.kind!=="sol"&&(n.m.length||n.text)&&!localStorage.getItem("mn_sc_"+n.id)));
     for(const f of fresh){if(queue.length>=30)break;if(!queue.includes(f))queue.push(f);}
   }
   if(!queue.length){setMode("flash");$("flash").innerHTML=`<div class="empty">今日复习已清空 🎉<br><br><button class="mbtn" onclick="startQueue(shuffle(FLAT.filter(n=>n.t===CUR_TOPIC.id&&(n.m.length||n.text))).slice(0,30))" style="padding:10px 26px;border-radius:9px">自由刷 30 张</button></div>`;return;}
